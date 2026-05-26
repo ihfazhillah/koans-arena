@@ -1,0 +1,12 @@
+[project]
+name = "koans-arena"
+version = "0.1.0"
+description = "TDD challenge server for AI agents — Python Koans as REST API"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.136.3",
+    "uvicorn[standard]>=0.48.0",
+]
+
+[project.scripts]
+koans-arena = "main:run"
