@@ -1,3 +1,4 @@
+import ast
 import json
 import os
 import shutil
@@ -181,7 +182,7 @@ class Arena:
         workspace = tempfile.mkdtemp(prefix=f"koans-{sid}-")
         shutil.copytree(KOANS_SOURCE / "koans", Path(workspace) / "koans")
         shutil.copytree(KOANS_SOURCE / "runner", Path(workspace) / "runner")
-        for extra in ["libs", "example_file.txt"]:
+        for extra in ["libs", "example_file.txt", "contemplate_koans.py"]:
             src = KOANS_SOURCE / extra
             if src.exists():
                 if src.is_dir():
@@ -228,6 +229,35 @@ class Arena:
 
         return None
 
+    def _get_supporting_files(self, source: str, workspace: str) -> dict[str, str]:
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return {}
+        files = {}
+        ws = Path(workspace)
+        koans_dir = ws / "koans"
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level > 0 and node.module:
+                parts = node.module.split(".")
+                candidates = [
+                    koans_dir / "/".join(parts) + ".py",
+                    koans_dir / "/".join(parts) / "__init__.py",
+                ]
+                for p in candidates:
+                    if p.exists():
+                        rel = str(p.relative_to(koans_dir))
+                        if rel not in files:
+                            files[rel] = p.read_text()
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    p = ws / (alias.name + ".py")
+                    if p.exists():
+                        rel = str(p.relative_to(ws))
+                        if rel not in files:
+                            files[rel] = p.read_text()
+        return files
+
     def get_challenge(self, session_id: str) -> dict:
         s = self.sessions[session_id]
         dq = self._check_disqualify(s)
@@ -248,7 +278,9 @@ class Arena:
         source = koan_path.read_text()
         tier_num, tier = tier_for_challenge(cid)
 
-        return {
+        supporting = self._get_supporting_files(source, s.workspace)
+
+        resp = {
             "challenge_id": cid,
             "index": s.current_index,
             "total_challenges": len(CHALLENGE_ORDER),
@@ -263,6 +295,9 @@ class Arena:
                 "Submit the complete modified file content."
             ),
         }
+        if supporting:
+            resp["supporting_files"] = supporting
+        return resp
 
     def submit(self, session_id: str, challenge_id: str, code: str) -> dict:
         s = self.sessions[session_id]
