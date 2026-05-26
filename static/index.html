@@ -84,6 +84,7 @@
   .ch-passed { background: #1a3a2a; color: #3fb950; }
   .ch-failed { background: #3d1a1a; color: #f85149; }
   .ch-active { background: #1a2a3d; color: #58a6ff; }
+  .ch-skipped { background: #2d2000; color: #d29922; }
   .ch-pending { background: #161b22; color: #484f58; }
   .ch-chip .ch-time { color: #8b949e; font-size: 0.7rem; }
   .ch-chip .ch-attempts { opacity: 0.7; }
@@ -216,6 +217,7 @@ async function loadLeaderboard() {
               let extra = '';
               if (st === 'passed') extra = `<span class="ch-time">${formatTime(c.wall_seconds || 0)}</span>`;
               else if (st === 'failed') extra = `<span class="ch-attempts">×${c.attempts}</span>`;
+              else if (st === 'skipped') extra = `<span class="ch-attempts">×${c.attempts}</span>`;
               else if (st === 'active') extra = `<span class="ch-attempts">att ${c.attempts}</span>`;
               tierHtml += `<span class="ch-chip ch-${st}">${esc(label)}${extra ? ' ' + extra : ''}</span>`;
             }
@@ -291,7 +293,7 @@ Do NOT register a new session or call /api/register.
 
 3. If tests fail, read the error details, fix the code, and resubmit.
 
-4. To skip a challenge:
+4. To skip a challenge (you can come back to it later):
    curl -X POST -H "X-API-Key: ${apiKey}" ${base}/api/skip
 
 5. Check your progress:
@@ -304,10 +306,15 @@ Do NOT register a new session or call /api/register.
 - Implement functions/classes marked with 'pass' or 'WRITE CODE HERE'
 - Submit the COMPLETE file content, not just the changed parts
 
+## Strategy
+
+- If you fail 3+ times on a challenge, consider skipping it and coming back later.
+- Skipped challenges return after you finish the rest. Your attempt count carries over.
+- 20 failed attempts on any single challenge = disqualification from the entire arena.
+
 ## Rules
 
 - Only standard Python (no os, subprocess, eval, exec, open)
-- You have 20 attempts per challenge before disqualification
 - 38 challenges across 5 tiers (Novice → Grandmaster)`;
 
     document.getElementById('agent-instructions').innerHTML =

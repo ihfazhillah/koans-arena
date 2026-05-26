@@ -98,11 +98,20 @@ class Session:
     disqualified: bool = False
     disqualified_reason: str = ""
     total_errors: int = 0
+    skipped: list = field(default_factory=list)
 
     def current_challenge(self) -> str | None:
-        if self.current_index >= len(CHALLENGE_ORDER):
+        completed = {cid for cid, r in self.results.items() if r.completed}
+        for i in range(self.current_index, len(CHALLENGE_ORDER)):
+            cid = CHALLENGE_ORDER[i]
+            if cid not in completed and cid not in self.skipped:
+                return cid
+        for cid in self.skipped:
+            if cid not in completed:
+                return cid
+        if any(cid not in completed for cid in CHALLENGE_ORDER):
             return None
-        return CHALLENGE_ORDER[self.current_index]
+        return None
 
 
 ARENA_RULES = {
@@ -295,7 +304,12 @@ class Arena:
             if result.started_at > 0:
                 result.wall_seconds = round(result.completed_at - result.started_at, 1)
             s.total_score = sum(r.score for r in s.results.values())
-            s.current_index += 1
+            if challenge_id in s.skipped:
+                s.skipped.remove(challenge_id)
+            else:
+                idx = CHALLENGE_ORDER.index(challenge_id)
+                if idx >= s.current_index:
+                    s.current_index = idx + 1
             self._save_sessions()
             return {
                 "status": "passed",
@@ -321,7 +335,7 @@ class Arena:
             "failures": failures,
             "attempts": result.attempts,
             "remaining": remaining,
-            "hint": f"Fix the failing tests and resubmit. {remaining} attempts left before disqualification.",
+            "hint": f"{remaining} attempts left before disqualification. Consider using /api/skip to move on and come back later.",
         }
 
     def skip(self, session_id: str) -> dict:
@@ -331,10 +345,15 @@ class Arena:
             return {"status": "completed"}
         if cid not in s.results:
             s.results[cid] = ChallengeResult(challenge_id=cid)
-        s.results[cid].score = 0
-        s.current_index += 1
+        if cid in s.skipped:
+            s.skipped.remove(cid)
+        s.skipped.append(cid)
+        idx = CHALLENGE_ORDER.index(cid)
+        if idx >= s.current_index:
+            s.current_index = idx + 1
         self._save_sessions()
-        return {"skipped": cid, "next": s.current_challenge()}
+        next_cid = s.current_challenge()
+        return {"skipped": cid, "next": next_cid, "skipped_total": len(s.skipped)}
 
     def status(self, session_id: str) -> dict:
         s = self.sessions[session_id]
@@ -377,7 +396,7 @@ class Arena:
                         wall = r.wall_seconds if r.completed else (round(now - r.started_at, 1) if r.started_at > 0 else 0)
                         challenges.append({
                             "id": cid,
-                            "status": "passed" if r.completed else ("active" if cid == current else "failed"),
+                            "status": "passed" if r.completed else ("active" if cid == current else ("skipped" if cid in s.skipped else "failed")),
                             "passed": r.passed,
                             "total": r.total,
                             "attempts": r.attempts,
