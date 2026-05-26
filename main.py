@@ -1,4 +1,6 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import pydantic
 from pathlib import Path
@@ -7,6 +9,16 @@ from arena import Arena
 
 app = FastAPI(title="Koans Arena", description="TDD challenge server for AI agents")
 arena = Arena(data_dir=Path(__file__).parent / "data")
+
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+@app.get("/")
+def index():
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 class RegisterRequest(BaseModel):
