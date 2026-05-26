@@ -90,6 +90,7 @@ class Session:
     agent_name: str
     model: str
     started_at: float
+    api_key: str = ""
     current_index: int = 0
     results: dict = field(default_factory=dict)
     total_score: int = 0
@@ -153,8 +154,20 @@ class Arena:
                 shutil.rmtree(workspace, ignore_errors=True)
             del self.sessions[oldest.session_id]
 
-    def register(self, agent_name: str, model: str) -> Session:
+    def get_session_by_key(self, api_key: str) -> Session | None:
+        for s in self.sessions.values():
+            if s.api_key == api_key:
+                return s
+        return None
+
+    def register(self, agent_name: str, model: str) -> Session | dict:
+        for s in self.sessions.values():
+            if s.api_key and s.disqualified:
+                if s.agent_name == agent_name:
+                    return {"error": "disqualified", "reason": s.disqualified_reason}
         self._cleanup_old_sessions()
+        import secrets
+        api_key = secrets.token_urlsafe(24)
         sid = uuid.uuid4().hex[:12]
         workspace = tempfile.mkdtemp(prefix=f"koans-{sid}-")
         shutil.copytree(KOANS_SOURCE / "koans", Path(workspace) / "koans")
@@ -172,6 +185,7 @@ class Arena:
             agent_name=agent_name,
             model=model,
             started_at=time.time(),
+            api_key=api_key,
             workspace=workspace,
         )
         self.sessions[sid] = session
@@ -241,7 +255,7 @@ class Arena:
             ),
         }
 
-    def submit(self, session_id: str, challenge_id: str, code: str, max_retries: int = 3) -> dict:
+    def submit(self, session_id: str, challenge_id: str, code: str) -> dict:
         s = self.sessions[session_id]
         dq = self._check_disqualify(s)
         if dq:
@@ -298,7 +312,7 @@ class Arena:
         if dq:
             return dq
 
-        retries_left = max_retries - result.attempts
+        remaining = self.rules["max_errors_per_challenge"] - result.attempts
         self._save_sessions()
         return {
             "status": "failed",
@@ -306,8 +320,8 @@ class Arena:
             "total": total,
             "failures": failures,
             "attempts": result.attempts,
-            "retries_left": max(0, retries_left),
-            "hint": "Fix the failing tests and resubmit." if retries_left > 0 else "Max retries reached. You can still resubmit or skip.",
+            "remaining": remaining,
+            "hint": f"Fix the failing tests and resubmit. {remaining} attempts left before disqualification.",
         }
 
     def skip(self, session_id: str) -> dict:
@@ -348,10 +362,42 @@ class Arena:
 
     def leaderboard(self) -> list[dict]:
         entries = []
+        now = time.time()
         for s in self.sessions.values():
             completed = sum(1 for r in s.results.values() if r.completed)
-            elapsed = time.time() - s.started_at
+            elapsed = now - s.started_at
+            current = s.current_challenge()
+
+            tiers_detail = {}
+            for tier_num, tier in TIERS.items():
+                challenges = []
+                for cid in tier["challenges"]:
+                    if cid in s.results:
+                        r = s.results[cid]
+                        wall = r.wall_seconds if r.completed else (round(now - r.started_at, 1) if r.started_at > 0 else 0)
+                        challenges.append({
+                            "id": cid,
+                            "status": "passed" if r.completed else ("active" if cid == current else "failed"),
+                            "passed": r.passed,
+                            "total": r.total,
+                            "attempts": r.attempts,
+                            "score": r.score,
+                            "wall_seconds": wall,
+                        })
+                    elif cid == current:
+                        challenges.append({"id": cid, "status": "active", "passed": 0, "total": 0, "attempts": 0, "score": 0, "wall_seconds": 0})
+                    else:
+                        challenges.append({"id": cid, "status": "pending"})
+                tier_passed = sum(1 for c in challenges if c["status"] == "passed")
+                tiers_detail[tier_num] = {
+                    "name": tier["name"],
+                    "passed": tier_passed,
+                    "total": len(tier["challenges"]),
+                    "challenges": challenges,
+                }
+
             entry = {
+                "session_id": s.session_id,
                 "agent_name": s.agent_name,
                 "model": s.model,
                 "total_score": s.total_score,
@@ -359,6 +405,7 @@ class Arena:
                 "total_challenges": len(CHALLENGE_ORDER),
                 "total_errors": s.total_errors,
                 "elapsed_seconds": round(elapsed, 1),
+                "tiers": tiers_detail,
             }
             if s.disqualified:
                 entry["disqualified"] = True

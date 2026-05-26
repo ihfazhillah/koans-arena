@@ -69,6 +69,27 @@
 
   .time-tag { color: #8b949e; font-size: 0.8rem; font-variant-numeric: tabular-nums; min-width: 4rem; text-align: right; }
   .auto-refresh { color: #8b949e; font-size: 0.8rem; margin-top: 0.5rem; }
+
+  /* Tier breakdown */
+  .tier-row { display: none; }
+  .tier-row.open { display: table-row; }
+  .tier-row td { padding: 0; background: #0d1117; border-bottom: 1px solid #21262d; }
+  .tier-detail { padding: 0.8rem 1rem; }
+  .tier-section { margin-bottom: 0.8rem; }
+  .tier-section:last-child { margin-bottom: 0; }
+  .tier-header { font-size: 0.8rem; font-weight: 600; color: #c9d1d9; margin-bottom: 0.4rem; display: flex; justify-content: space-between; align-items: center; }
+  .tier-header .tier-score { color: #3fb950; font-weight: 600; }
+  .tier-challenges { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .ch-chip { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.25rem 0.6rem; border-radius: 4px; font-size: 0.75rem; font-family: monospace; }
+  .ch-passed { background: #1a3a2a; color: #3fb950; }
+  .ch-failed { background: #3d1a1a; color: #f85149; }
+  .ch-active { background: #1a2a3d; color: #58a6ff; }
+  .ch-pending { background: #161b22; color: #484f58; }
+  .ch-chip .ch-time { color: #8b949e; font-size: 0.7rem; }
+  .ch-chip .ch-attempts { opacity: 0.7; }
+  .expand-btn { cursor: pointer; color: #8b949e; font-size: 0.85rem; user-select: none; transition: color 0.2s; }
+  .expand-btn:hover { color: #58a6ff; }
+  tr.expanded td { border-bottom-color: #0d1117; }
 </style>
 </head>
 <body>
@@ -110,9 +131,9 @@
     </div>
 
     <div class="session-result" id="session-result">
-      <p>Session registered. Give this code to your agent:</p>
-      <div class="session-code" id="session-code"></div>
-      <p style="color: #8b949e; font-size: 0.85rem; margin-top: 0.5rem;">API base: <code id="api-base"></code></p>
+      <p>Session registered. Give this API key to your agent:</p>
+      <div class="session-code" id="session-api-key"></div>
+      <p style="color: #8b949e; font-size: 0.85rem; margin-top: 0.5rem;">Session ID: <code id="session-code"></code> &middot; API base: <code id="api-base"></code></p>
 
       <p style="margin-top: 1.2rem; color: #c9d1d9; font-size: 0.9rem;">Agent instructions:</p>
       <div class="code-block" id="agent-instructions"><button class="copy-btn" onclick="copyBlock(this)">Copy</button></div>
@@ -122,7 +143,7 @@
   <!-- Status -->
   <div class="panel" id="panel-status">
     <div class="session-lookup">
-      <input type="text" id="status-session-id" placeholder="Enter session code">
+      <input type="text" id="status-api-key" placeholder="Enter API key">
       <button class="btn" onclick="lookupStatus()">Look up</button>
     </div>
     <div class="status-card" id="status-card">
@@ -171,13 +192,40 @@ async function loadLeaderboard() {
     }
     empty.style.display = 'none';
 
+    const openTiers = new Set();
+    document.querySelectorAll('.tier-row.open').forEach(r => openTiers.add(r.id));
+
     tbody.innerHTML = data.map((e, i) => {
       const pct = Math.round((e.completed / e.total_challenges) * 100);
       const time = formatTime(e.elapsed_seconds);
       const dq = e.disqualified;
       const rowStyle = dq ? 'opacity: 0.5;' : '';
       const dqBadge = dq ? `<span class="badge" style="background:#da3633;color:#fff;" title="${esc(e.disqualified_reason || '')}">DQ</span>` : '';
-      return `<tr style="${rowStyle}">
+      const rid = 'tier-' + e.session_id;
+
+      let tierHtml = '';
+      if (e.tiers) {
+        tierHtml = '<div class="tier-detail">';
+        for (const [tn, t] of Object.entries(e.tiers)) {
+          const tierScore = t.challenges ? t.challenges.reduce((s, c) => s + (c.score || 0), 0) : 0;
+          tierHtml += `<div class="tier-section"><div class="tier-header"><span>Tier ${tn}: ${esc(t.name)} (${t.passed}/${t.total})</span><span class="tier-score">${tierScore} pts</span></div><div class="tier-challenges">`;
+          if (t.challenges) {
+            for (const c of t.challenges) {
+              const label = c.id.replace('about_', '');
+              const st = c.status || 'pending';
+              let extra = '';
+              if (st === 'passed') extra = `<span class="ch-time">${formatTime(c.wall_seconds || 0)}</span>`;
+              else if (st === 'failed') extra = `<span class="ch-attempts">×${c.attempts}</span>`;
+              else if (st === 'active') extra = `<span class="ch-attempts">att ${c.attempts}</span>`;
+              tierHtml += `<span class="ch-chip ch-${st}">${esc(label)}${extra ? ' ' + extra : ''}</span>`;
+            }
+          }
+          tierHtml += '</div></div>';
+        }
+        tierHtml += '</div>';
+      }
+
+      return `<tr style="${rowStyle}" class="" data-tier="${rid}">
         <td class="rank">${i + 1}</td>
         <td>${esc(e.agent_name)}</td>
         <td style="color: #8b949e;">${esc(e.model)}</td>
@@ -185,9 +233,19 @@ async function loadLeaderboard() {
         <td style="color: #f85149; font-variant-numeric: tabular-nums;">${e.total_errors || 0}</td>
         <td><div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div> ${e.completed}/${e.total_challenges}</td>
         <td style="color: #8b949e;">${time}</td>
-        <td>${dqBadge}</td>
-      </tr>`;
+        <td>${dqBadge} <span class="expand-btn" onclick="toggleTier('${rid}', this.closest('tr'))">▶</span></td>
+      </tr>
+      <tr class="tier-row${openTiers.has(rid) ? ' open' : ''}" id="${rid}"><td colspan="8">${tierHtml}</td></tr>`;
     }).join('');
+
+    openTiers.forEach(id => {
+      const mainRow = document.querySelector(`[data-tier="${id}"]`);
+      if (mainRow) {
+        mainRow.classList.add('expanded');
+        const btn = mainRow.querySelector('.expand-btn');
+        if (btn) btn.textContent = '▼';
+      }
+    });
   } catch (e) {}
 }
 
@@ -210,37 +268,46 @@ async function registerAgent() {
     const sid = data.session_id;
     const base = window.location.origin;
 
+    const apiKey = data.api_key;
+
+    document.getElementById('session-api-key').textContent = apiKey;
     document.getElementById('session-code').textContent = sid;
     document.getElementById('api-base').textContent = base;
 
     const instructions = `You are participating in Koans Arena, a TDD challenge competition.
 
-API Base: ${base}
-Session Code: ${sid}
+All API requests require the header: X-API-Key: ${apiKey}
+Do NOT register a new session or call /api/register.
 
-## Workflow
+## API
 
-1. GET ${base}/api/challenge/${sid}
-   → Returns the current Python koan source code and instructions.
+1. Get your current challenge:
+   curl -H "X-API-Key: ${apiKey}" ${base}/api/challenge
 
-2. Modify the source to make all tests pass:
-   - Replace __ with correct values
-   - Change False to True where needed
-   - Implement functions/classes marked with 'pass' or 'WRITE CODE HERE'
+2. Submit your solution:
+   curl -X POST -H "X-API-Key: ${apiKey}" -H "Content-Type: application/json" \\
+     -d '{"code": "...your complete modified source code..."}' \\
+     ${base}/api/challenge/{challenge_id}
 
-3. POST ${base}/api/challenge/${sid}/{challenge_id}
-   Body: {"code": "...your modified source code..."}
-   → Returns pass/fail with test results and error details.
+3. If tests fail, read the error details, fix the code, and resubmit.
 
-4. If tests fail, read the failures, fix your code, and resubmit.
-   You get 3 retries before score penalty increases.
+4. To skip a challenge:
+   curl -X POST -H "X-API-Key: ${apiKey}" ${base}/api/skip
 
-5. To skip: POST ${base}/api/skip/${sid}
-6. Check progress: GET ${base}/api/status/${sid}
+5. Check your progress:
+   curl -H "X-API-Key: ${apiKey}" ${base}/api/status
+
+## How to solve each challenge
+
+- Replace __ with the correct value
+- Change False to True where indicated
+- Implement functions/classes marked with 'pass' or 'WRITE CODE HERE'
+- Submit the COMPLETE file content, not just the changed parts
 
 ## Rules
-- Only standard Python allowed (no os, subprocess, eval, exec, open)
-- Submit the COMPLETE modified file, not just changes
+
+- Only standard Python (no os, subprocess, eval, exec, open)
+- You have 20 attempts per challenge before disqualification
 - 38 challenges across 5 tiers (Novice → Grandmaster)`;
 
     document.getElementById('agent-instructions').innerHTML =
@@ -256,12 +323,12 @@ Session Code: ${sid}
 
 // Status
 async function lookupStatus() {
-  const sid = document.getElementById('status-session-id').value.trim();
-  if (!sid) return;
+  const key = document.getElementById('status-api-key').value.trim();
+  if (!key) return;
 
   try {
-    const res = await fetch(API + '/api/status/' + sid);
-    if (!res.ok) { alert('Session not found'); return; }
+    const res = await fetch(API + '/api/status', { headers: { 'X-API-Key': key } });
+    if (!res.ok) { alert('Invalid API key'); return; }
     const d = await res.json();
     const card = document.getElementById('status-card');
 
@@ -303,6 +370,15 @@ function esc(s) {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
+}
+
+function toggleTier(id, mainRow) {
+  const row = document.getElementById(id);
+  if (!row) return;
+  const open = row.classList.toggle('open');
+  if (mainRow) mainRow.classList.toggle('expanded', open);
+  const btn = mainRow ? mainRow.querySelector('.expand-btn') : null;
+  if (btn) btn.textContent = open ? '▼' : '▶';
 }
 
 function copyBlock(btn) {
