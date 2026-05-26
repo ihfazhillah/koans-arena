@@ -79,6 +79,9 @@ class ChallengeResult:
     completed: bool = False
     failures: list = field(default_factory=list)
     elapsed_seconds: float = 0
+    started_at: float = 0
+    completed_at: float = 0
+    wall_seconds: float = 0
 
 
 @dataclass
@@ -91,6 +94,9 @@ class Session:
     results: dict = field(default_factory=dict)
     total_score: int = 0
     workspace: str = ""
+    disqualified: bool = False
+    disqualified_reason: str = ""
+    total_errors: int = 0
 
     def current_challenge(self) -> str | None:
         if self.current_index >= len(CHALLENGE_ORDER):
@@ -98,8 +104,17 @@ class Session:
         return CHALLENGE_ORDER[self.current_index]
 
 
+ARENA_RULES = {
+    "challenge_timeout": 0,
+    "max_errors_per_challenge": 20,
+    "max_total_errors": 100,
+    "max_consecutive_fails": 20,
+}
+
+
 class Arena:
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, rules: dict | None = None):
+        self.rules = {**ARENA_RULES, **(rules or {})}
         self.data_dir = data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.sessions: dict[str, Session] = {}
@@ -163,11 +178,48 @@ class Arena:
         self._save_sessions()
         return session
 
+    def _check_disqualify(self, s: Session) -> dict | None:
+        if s.disqualified:
+            return {"status": "disqualified", "reason": s.disqualified_reason, "total_score": s.total_score}
+
+        cid = s.current_challenge()
+        if cid and cid in s.results:
+            r = s.results[cid]
+            if self.rules["challenge_timeout"] > 0 and r.started_at > 0 and (time.time() - r.started_at) > self.rules["challenge_timeout"]:
+                s.disqualified = True
+                s.disqualified_reason = f"Timeout on '{cid}' ({self.rules['challenge_timeout']}s)"
+                self._save_sessions()
+                return {"status": "disqualified", "reason": s.disqualified_reason, "total_score": s.total_score}
+
+            if r.attempts >= self.rules["max_errors_per_challenge"]:
+                s.disqualified = True
+                s.disqualified_reason = f"Too many failures on '{cid}' ({r.attempts}/{self.rules['max_errors_per_challenge']})"
+                self._save_sessions()
+                return {"status": "disqualified", "reason": s.disqualified_reason, "total_score": s.total_score}
+
+        if s.total_errors >= self.rules["max_total_errors"]:
+            s.disqualified = True
+            s.disqualified_reason = f"Total error limit reached ({s.total_errors}/{self.rules['max_total_errors']})"
+            self._save_sessions()
+            return {"status": "disqualified", "reason": s.disqualified_reason, "total_score": s.total_score}
+
+        return None
+
     def get_challenge(self, session_id: str) -> dict:
         s = self.sessions[session_id]
+        dq = self._check_disqualify(s)
+        if dq:
+            return dq
+
         cid = s.current_challenge()
         if cid is None:
             return {"status": "completed", "message": "All challenges done!"}
+
+        if cid not in s.results:
+            s.results[cid] = ChallengeResult(challenge_id=cid)
+        if s.results[cid].started_at == 0:
+            s.results[cid].started_at = time.time()
+            self._save_sessions()
 
         koan_path = Path(s.workspace) / "koans" / f"{cid}.py"
         source = koan_path.read_text()
@@ -191,6 +243,10 @@ class Arena:
 
     def submit(self, session_id: str, challenge_id: str, code: str, max_retries: int = 3) -> dict:
         s = self.sessions[session_id]
+        dq = self._check_disqualify(s)
+        if dq:
+            return dq
+
         current = s.current_challenge()
         if current != challenge_id:
             return {"error": f"Expected challenge '{current}', got '{challenge_id}'"}
@@ -221,6 +277,9 @@ class Arena:
             retry_penalty = max(0, (result.attempts - 1) * 2)
             result.score = max(1, (passed * tier["points_per_test"]) - retry_penalty)
             result.completed = True
+            result.completed_at = time.time()
+            if result.started_at > 0:
+                result.wall_seconds = round(result.completed_at - result.started_at, 1)
             s.total_score = sum(r.score for r in s.results.values())
             s.current_index += 1
             self._save_sessions()
@@ -233,6 +292,11 @@ class Arena:
                 "total_score": s.total_score,
                 "next": s.current_challenge(),
             }
+
+        s.total_errors += 1
+        dq = self._check_disqualify(s)
+        if dq:
+            return dq
 
         retries_left = max_retries - result.attempts
         self._save_sessions()
@@ -262,6 +326,13 @@ class Arena:
         s = self.sessions[session_id]
         elapsed = time.time() - s.started_at
         completed = sum(1 for r in s.results.values() if r.completed)
+        now = time.time()
+        results = {}
+        for cid, r in s.results.items():
+            d = asdict(r)
+            if r.started_at > 0 and not r.completed:
+                d["wall_seconds"] = round(now - r.started_at, 1)
+            results[cid] = d
         return {
             "session_id": s.session_id,
             "agent_name": s.agent_name,
@@ -272,7 +343,7 @@ class Arena:
             "completed": completed,
             "total_score": s.total_score,
             "elapsed_seconds": round(elapsed, 1),
-            "results": {cid: asdict(r) for cid, r in s.results.items()},
+            "results": results,
         }
 
     def leaderboard(self) -> list[dict]:
@@ -280,14 +351,19 @@ class Arena:
         for s in self.sessions.values():
             completed = sum(1 for r in s.results.values() if r.completed)
             elapsed = time.time() - s.started_at
-            entries.append({
+            entry = {
                 "agent_name": s.agent_name,
                 "model": s.model,
                 "total_score": s.total_score,
                 "completed": completed,
                 "total_challenges": len(CHALLENGE_ORDER),
+                "total_errors": s.total_errors,
                 "elapsed_seconds": round(elapsed, 1),
-            })
+            }
+            if s.disqualified:
+                entry["disqualified"] = True
+                entry["disqualified_reason"] = s.disqualified_reason
+            entries.append(entry)
         entries.sort(key=lambda e: (-e["total_score"], e["elapsed_seconds"]))
         return entries
 

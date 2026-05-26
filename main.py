@@ -82,6 +82,11 @@ def tiers():
     return TIERS
 
 
+@app.get("/api/rules")
+def rules():
+    return arena.rules
+
+
 def run():
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8888)

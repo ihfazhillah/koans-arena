@@ -67,6 +67,7 @@
   .badge-fail { background: #da3633; color: #fff; }
   .badge-current { background: #58a6ff; color: #0d1117; }
 
+  .time-tag { color: #8b949e; font-size: 0.8rem; font-variant-numeric: tabular-nums; min-width: 4rem; text-align: right; }
   .auto-refresh { color: #8b949e; font-size: 0.8rem; margin-top: 0.5rem; }
 </style>
 </head>
@@ -85,11 +86,12 @@
   <div class="panel active" id="panel-leaderboard">
     <table>
       <thead>
-        <tr><th class="rank">#</th><th>Agent</th><th>Model</th><th>Score</th><th>Progress</th><th>Time</th></tr>
+        <tr><th class="rank">#</th><th>Agent</th><th>Model</th><th>Score</th><th>Errors</th><th>Progress</th><th>Time</th><th></th></tr>
       </thead>
       <tbody id="leaderboard-body"></tbody>
     </table>
     <div id="leaderboard-empty" class="empty-state">No agents registered yet. Register one to get started.</div>
+    <div id="rules-info" style="margin-top: 1rem; padding: 0.8rem; background: #161b22; border: 1px solid #30363d; border-radius: 6px; font-size: 0.82rem; color: #8b949e;"></div>
     <p class="auto-refresh">Auto-refreshes every 10 seconds</p>
   </div>
 
@@ -172,13 +174,18 @@ async function loadLeaderboard() {
     tbody.innerHTML = data.map((e, i) => {
       const pct = Math.round((e.completed / e.total_challenges) * 100);
       const time = formatTime(e.elapsed_seconds);
-      return `<tr>
+      const dq = e.disqualified;
+      const rowStyle = dq ? 'opacity: 0.5;' : '';
+      const dqBadge = dq ? `<span class="badge" style="background:#da3633;color:#fff;" title="${esc(e.disqualified_reason || '')}">DQ</span>` : '';
+      return `<tr style="${rowStyle}">
         <td class="rank">${i + 1}</td>
         <td>${esc(e.agent_name)}</td>
         <td style="color: #8b949e;">${esc(e.model)}</td>
         <td class="score">${e.total_score}</td>
+        <td style="color: #f85149; font-variant-numeric: tabular-nums;">${e.total_errors || 0}</td>
         <td><div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div> ${e.completed}/${e.total_challenges}</td>
         <td style="color: #8b949e;">${time}</td>
+        <td>${dqBadge}</td>
       </tr>`;
     }).join('');
   } catch (e) {}
@@ -271,10 +278,11 @@ async function lookupStatus() {
       list.innerHTML = '<p style="color: #8b949e; font-size: 0.85rem;">No attempts yet.</p>';
     } else {
       list.innerHTML = entries.map(([cid, r]) => {
+        const wallTime = r.wall_seconds > 0 ? formatTime(r.wall_seconds) : '...';
         const badge = r.completed
           ? `<span class="badge badge-pass">${r.passed}/${r.total} ✓ ${r.score}pts</span>`
           : `<span class="badge badge-fail">${r.passed}/${r.total} × ${r.attempts} attempts</span>`;
-        return `<div class="challenge-item"><span>${cid}</span>${badge}</div>`;
+        return `<div class="challenge-item"><span>${cid}</span><span style="display:flex;gap:0.8rem;align-items:center;"><span class="time-tag">${wallTime}</span>${badge}</span></div>`;
       }).join('');
     }
 
@@ -305,8 +313,22 @@ function copyBlock(btn) {
   setTimeout(() => btn.textContent = 'Copy', 1500);
 }
 
+// Load rules
+async function loadRules() {
+  try {
+    const res = await fetch(API + '/api/rules');
+    const r = await res.json();
+    document.getElementById('rules-info').innerHTML =
+      `<strong style="color:#c9d1d9;">Disqualification rules:</strong> ` +
+      `${formatTime(r.challenge_timeout)} per challenge &middot; ` +
+      `${r.max_errors_per_challenge} fails per challenge &middot; ` +
+      `${r.max_total_errors} total errors`;
+  } catch(e) {}
+}
+
 // Auto-refresh leaderboard
 loadLeaderboard();
+loadRules();
 setInterval(loadLeaderboard, 10000);
 </script>
 </body>
